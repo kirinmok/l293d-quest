@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L293D 闖關版 — L1：讓馬達轉起來</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+body { background: #0f172a; margin: 0; }
+@keyframes spin-cw  { 100% { transform: rotate(360deg); } }
+@keyframes spin-ccw { 100% { transform: rotate(-360deg); } }
+@keyframes flow { from { stroke-dashoffset: 14; } to { stroke-dashoffset: 0; } }
+.current-flow { animation: flow 0.4s linear infinite; }
+@keyframes pop { 0% { transform: scale(0.5); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+.pop-in { animation: pop 0.3s ease-out; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react" data-type="script">
+const { useState, useRef, useEffect, useMemo } = React;
+
+const PINS = {
+  'bat-plus':    { x: 220, y: 380, polarity: '+', side: 'battery', label: '電池 +' },
+  'bat-minus':   { x: 220, y: 440, polarity: '-', side: 'battery', label: '電池 −' },
+  'motor-red':   { x: 600, y: 380, polarity: '+', side: 'motor',   label: '紅線（+）' },
+  'motor-black': { x: 600, y: 440, polarity: '-', side: 'motor',   label: '黑線（−）' },
+};
+
+const findWire = (wires, a, b) =>
+  wires.find(w => !w.temp && ((w.from === a && w.to === b) || (w.from === b && w.to === a)));
+
+function App() {
+  const [wires, setWires] = useState([]);
+  const [activeWire, setActiveWire] = useState(null);
+  const [hint, setHint] = useState(null);
+  const [stageComplete, setStageComplete] = useState(false);
+  const [shortCount, setShortCount] = useState(0);
+  const [hoveredPin, setHoveredPin] = useState(null);
+  const svgRef = useRef(null);
+
+  // 馬達轉向判定
+  const motorDirection = useMemo(() => {
+    const fwdA = findWire(wires, 'bat-plus', 'motor-red');
+    const fwdB = findWire(wires, 'bat-minus', 'motor-black');
+    if (fwdA && fwdB) return 'cw';
+    const revA = findWire(wires, 'bat-plus', 'motor-black');
+    const revB = findWire(wires, 'bat-minus', 'motor-red');
+    if (revA && revB) return 'ccw';
+    return 'stop';
+  }, [wires]);
+
+  useEffect(() => {
+    if (motorDirection !== 'stop' && !stageComplete) {
+      setStageComplete(true);
+      setHint({
+        type: 'win',
+        message: motorDirection === 'cw'
+          ? '⭐ 馬達正轉了！試把線換邊接，看看會怎樣？'
+          : '⭐ 馬達反轉了！原來正負極對調就能反方向轉！',
+        ts: Date.now()
+      });
+    } else if (motorDirection === 'stop' && stageComplete && wires.filter(w => !w.temp).length < 2) {
+      setStageComplete(false);
+    }
+  }, [motorDirection, stageComplete, wires]);
+
+  // 自動清掉舊提示
+  useEffect(() => {
+    if (!hint) return;
+    if (hint.type === 'win') return;
+    const t = setTimeout(() => setHint(null), 2500);
+    return () => clearTimeout(t);
+  }, [hint]);
+
+  const getSvgCoords = (e) => {
+    const rect = svgRef.current.getBoundingClientRect();
+    const scaleX = 800 / rect.width;
+    const scaleY = 600 / rect.height;
+    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+  };
+
+  const handlePinDown = (pinId, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const c = getSvgCoords(e);
+    setActiveWire({ from: pinId, x: c.x, y: c.y });
+  };
+
+  const handleMouseMove = (e) => {
+    if (!activeWire) return;
+    const c = getSvgCoords(e);
+    setActiveWire({ ...activeWire, x: c.x, y: c.y });
+  };
+
+  const handlePinUp = (pinId, e) => {
+    if (e) e.stopPropagation();
+    if (!activeWire) return;
+    if (activeWire.from === pinId) { setActiveWire(null); return; }
+
+    // 重複
+    if (findWire(wires, activeWire.from, pinId)) {
+      setHint({ type: 'warn', message: '⚠️ 這兩個 pin 已經連過了', ts: Date.now() });
+      setActiveWire(null);
+      return;
+    }
+
+    // 同邊互接 = 短路
+    if (PINS[activeWire.from].side === PINS[pinId].side) {
+      setHint({ type: 'short', message: '💥 短路！同一個元件的 + 接 −，會把電池燒乾甚至冒煙！', ts: Date.now() });
+      const tempWire = { from: activeWire.from, to: pinId, temp: true, id: Date.now() };
+      setWires(w => [...w, tempWire]);
+      setShortCount(c => c + 1);
+      setActiveWire(null);
+      setTimeout(() => setWires(w => w.filter(x => x.id !== tempWire.id)), 1000);
+      return;
+    }
+
+    // 跨邊正常連線
+    setWires(w => [...w, { from: activeWire.from, to: pinId, id: Date.now() }]);
+    setActiveWire(null);
+  };
+
+  const handleSvgMouseUp = () => setActiveWire(null);
+
+  const resetGame = () => {
+    setWires([]); setActiveWire(null); setHint(null); setStageComplete(false); setShortCount(0);
+  };
+
+  const removeWire = (id) => {
+    setWires(w => w.filter(x => x.id !== id));
+  };
+
+  return (
+    <div className="min-h-screen p-4 text-slate-200 font-sans">
+      <div className="max-w-5xl mx-auto">
+        {/* 標題列 */}
+        <div className="bg-slate-800 p-4 rounded-lg border border-slate-700 mb-3 flex justify-between items-center flex-wrap gap-2">
+          <div>
+            <div className="text-xs text-cyan-400 font-bold tracking-wider">LEVEL 1 / 4</div>
+            <div className="text-2xl font-bold">⚡ 讓馬達轉起來！</div>
+            <div className="text-xs text-slate-400 mt-1">把電池的正負極接到馬達的紅黑線。試試正接、反接，看看會怎樣。</div>
+          </div>
+          <div className="flex gap-3 items-center">
+            <div className="text-sm bg-slate-900 px-3 py-1 rounded border border-slate-700">進度 <span className="font-bold text-cyan-400">{Math.min(wires.filter(w => !w.temp).length, 2)}/2</span></div>
+            {shortCount > 0 && <div className="text-xs bg-red-900/50 border border-red-500 px-2 py-1 rounded text-red-200">💥 短路 ×{shortCount}</div>}
+            <button onClick={resetGame} className="px-3 py-1 text-xs font-bold bg-orange-900/50 border border-orange-500 rounded text-orange-200">🔄 重置</button>
+          </div>
+        </div>
+
+        {/* 場景 */}
+        <div className="relative bg-[#0b1221] rounded-xl shadow-2xl border border-slate-700 overflow-hidden">
+          <svg
+            ref={svgRef}
+            viewBox="0 0 800 600"
+            className="w-full h-auto"
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleSvgMouseUp}
+            style={{ cursor: activeWire ? 'crosshair' : 'default', userSelect: 'none' }}
+          >
+            <defs>
+              <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+                <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" strokeWidth="1"/>
+              </pattern>
+            </defs>
+            <rect width="800" height="600" fill="url(#grid)" />
+
+            {/* 標題 */}
+            <text x="220" y="200" textAnchor="middle" fill="#fbbf24" fontSize="16" fontWeight="bold">電池盒（電源）</text>
+            <text x="600" y="200" textAnchor="middle" fill="#fbbf24" fontSize="16" fontWeight="bold">直流馬達</text>
+
+            {/* 電池盒 */}
+            <g transform="translate(160, 230)">
+              <rect width="120" height="160" rx="10" fill="#0f172a" stroke="#334155" strokeWidth="3" />
+              <rect x="5" y="5" width="110" height="150" rx="6" fill="#1e293b" />
+              {[0,1,2,3].map(i => (
+                <g key={i} transform={`translate(${12+i*25}, 18)`}>
+                  <rect width="22" height="120" rx="2" fill={i%2===0 ? '#ef4444' : '#cbd5e1'} />
+                  <text x="11" y="65" textAnchor="middle" fill={i%2===0 ? 'white' : '#0f172a'} fontSize="9" fontWeight="bold">AA</text>
+                </g>
+              ))}
+              <text x="60" y="178" textAnchor="middle" fill="#fbbf24" fontSize="11" fontWeight="bold">1.5V × 4 = 6V</text>
+            </g>
+
+            {/* 馬達 */}
+            <g transform="translate(600, 310)">
+              <rect x="-25" y="-50" width="50" height="100" rx="6" fill="#facc15" stroke="#b45309" strokeWidth="2" />
+              <circle cx="0" cy="-30" r="10" fill="#fef08a" />
+              <circle cx="0" cy="30" r="10" fill="#fef08a" />
+              <text x="0" y="6" textAnchor="middle" fill="#78350f" fontSize="11" fontWeight="bold" transform="rotate(-90)">TT Motor</text>
+
+              {/* 輪子 */}
+              <g
+                style={{
+                  animation: motorDirection === 'cw' ? 'spin-cw 0.6s linear infinite' :
+                             motorDirection === 'ccw' ? 'spin-ccw 0.6s linear infinite' : 'none',
+                  transformOrigin: '60px 0',
+                  transformBox: 'fill-box'
+                }}
+              >
+                <g transform="translate(60, 0)">
+                  <circle r="40" fill="#334155" stroke="#0f172a" strokeWidth="3" />
+                  <circle r="32" fill="#fde047" stroke="#ca8a04" />
+                  {[0,1,2,3,4].map(i => (
+                    <g key={i} transform={`rotate(${i*72})`}>
+                      <path d="M -5 -12 L 5 -12 L 8 -25 L -8 -25 Z" fill="#1e293b" />
+                    </g>
+                  ))}
+                  <circle r="5" fill="#cbd5e1" />
+                  <rect x="-2" y="-4" width="4" height="8" fill="#94a3b8" />
+                </g>
+              </g>
+            </g>
+
+            {/* 已連好的線 */}
+            {wires.map((w) => {
+              const from = PINS[w.from];
+              const to = PINS[w.to];
+              const color = w.temp ? '#ef4444' : (PINS[w.from].polarity === '+' ? '#ef4444' : '#3b82f6');
+              return (
+                <g key={w.id}>
+                  <line
+                    x1={from.x} y1={from.y} x2={to.x} y2={to.y}
+                    stroke={color} strokeWidth="6" strokeLinecap="round" opacity={w.temp ? 0.7 : 1}
+                    style={{ cursor: w.temp ? 'default' : 'pointer' }}
+                    onClick={() => !w.temp && removeWire(w.id)}
+                  />
+                  {motorDirection !== 'stop' && !w.temp && (
+                    <line
+                      x1={from.x} y1={from.y} x2={to.x} y2={to.y}
+                      stroke="white" strokeWidth="2" strokeDasharray="6 8"
+                      className="current-flow"
+                    />
+                  )}
+                  {w.temp && (
+                    <g>
+                      {[0,1,2].map(i => (
+                        <circle key={i} cx={(from.x+to.x)/2 + (i-1)*15} cy={(from.y+to.y)/2} r="8" fill="#64748b">
+                          <animate attributeName="r" from="5" to="35" dur="1s" begin={`${i*0.1}s`} />
+                          <animate attributeName="opacity" from="0.8" to="0" dur="1s" begin={`${i*0.1}s`} />
+                          <animate attributeName="cy" from={(from.y+to.y)/2} to={(from.y+to.y)/2 - 60} dur="1s" begin={`${i*0.1}s`} />
+                        </circle>
+                      ))}
+                      <text x={(from.x+to.x)/2} y={(from.y+to.y)/2 + 8} textAnchor="middle" fontSize="32">💥</text>
+                    </g>
+                  )}
+                </g>
+              );
+            })}
+
+            {/* 拖曳中的虛線 */}
+            {activeWire && (
+              <line
+                x1={PINS[activeWire.from].x} y1={PINS[activeWire.from].y}
+                x2={activeWire.x} y2={activeWire.y}
+                stroke="#fbbf24" strokeWidth="4" strokeDasharray="8 4" strokeLinecap="round" opacity="0.8"
+              />
+            )}
+
+            {/* Pin（hover/選中時脈動發亮，未來 L3+ 加 Nano 後同一條邏輯延伸到板子對應位置） */}
+            {Object.entries(PINS).map(([id, p]) => {
+              const isActive = hoveredPin === id || (activeWire && activeWire.from === id);
+              const glowColor = p.polarity === '+' ? '#fca5a5' : '#93c5fd';
+              return (
+                <g key={id}
+                  onMouseEnter={() => setHoveredPin(id)}
+                  onMouseLeave={() => setHoveredPin(null)}
+                >
+                  <text x={p.x} y={p.y-26} textAnchor="middle"
+                    fill={isActive ? '#fbbf24' : 'white'}
+                    fontSize={isActive ? "12" : "11"}
+                    fontWeight="bold"
+                    style={{pointerEvents:'none', transition:'all 0.15s'}}
+                  >{p.label}</text>
+                  {/* 脈動光環 */}
+                  {isActive && (
+                    <circle cx={p.x} cy={p.y} r="14" fill={glowColor} opacity="0.5">
+                      <animate attributeName="r" values="14;34;14" dur="1.2s" repeatCount="indefinite" />
+                      <animate attributeName="opacity" values="0.7;0;0.7" dur="1.2s" repeatCount="indefinite" />
+                    </circle>
+                  )}
+                  <circle cx={p.x} cy={p.y} r="18" fill={p.polarity === '+' ? '#7f1d1d' : '#1e3a8a'} opacity="0.4" />
+                  <circle
+                    cx={p.x} cy={p.y} r={isActive ? "16" : "14"}
+                    fill={p.polarity === '+' ? '#ef4444' : '#3b82f6'}
+                    stroke={isActive ? "#fbbf24" : "white"} strokeWidth="3"
+                    style={{ cursor: 'grab', transition: 'all 0.15s' }}
+                    onMouseDown={(e) => handlePinDown(id, e)}
+                    onMouseUp={(e) => handlePinUp(id, e)}
+                  />
+                  <text x={p.x} y={p.y+5} textAnchor="middle" fill="white" fontSize="14" fontWeight="bold" style={{pointerEvents:'none'}}>{p.polarity}</text>
+                </g>
+              );
+            })}
+
+            {/* 提示泡泡 */}
+            {hint && (
+              <g className="pop-in">
+                <rect x="160" y="40" width="480" height="56" rx="10"
+                  fill={hint.type === 'win' ? '#fbbf24' : hint.type === 'short' ? '#dc2626' : hint.type === 'warn' ? '#f97316' : '#22c55e'}
+                  stroke="white" strokeWidth="2"
+                />
+                <text x="400" y="76" textAnchor="middle" fill={hint.type === 'win' ? '#0f172a' : 'white'} fontSize="15" fontWeight="bold">{hint.message}</text>
+              </g>
+            )}
+
+            {/* 過關 → 下一關 */}
+            {stageComplete && (
+              <g transform="translate(400, 530)" style={{cursor: 'pointer'}}>
+                <rect x="-110" y="0" width="220" height="44" rx="10" fill="#22c55e" stroke="white" strokeWidth="2" />
+                <text x="0" y="29" textAnchor="middle" fill="white" fontSize="16" fontWeight="bold">▶ L2 加開關（建構中）</text>
+              </g>
+            )}
+          </svg>
+        </div>
+
+        {/* 玩法說明 */}
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <div className="bg-slate-800 p-3 rounded-lg border border-slate-700">
+            <div className="font-bold text-cyan-400 mb-2 text-sm">💡 怎麼玩</div>
+            <ul className="text-xs text-slate-300 space-y-1 ml-4 list-disc">
+              <li>滑鼠按住一顆 pin（圓點），拖到另一顆 pin 釋放</li>
+              <li>已接好的線可以點擊刪除</li>
+              <li>正確接法：紅↔紅 + 藍↔藍 = 正轉</li>
+              <li>反接：紅↔藍 + 藍↔紅 = 反轉</li>
+              <li>同邊互接（電池+ 接電池−）= 短路冒煙</li>
+            </ul>
+          </div>
+          <div className="bg-slate-800 p-3 rounded-lg border border-slate-700">
+            <div className="font-bold text-yellow-400 mb-2 text-sm">🎓 這關學什麼</div>
+            <ul className="text-xs text-slate-300 space-y-1 ml-4 list-disc">
+              <li>馬達需要「正負極都接才會轉」（電流要回家）</li>
+              <li>正負對調 → 馬達反方向轉（左右輪用這原理）</li>
+              <li>短路 = 電池燒掉 + 電線發燙</li>
+              <li>下一關：開關 = 控制電流通斷</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>

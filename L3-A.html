@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>L3 Phase A — L293D 模組 1:1 寫實 + Pin 發亮測試</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+body { background: #0f172a; margin: 0; }
+@keyframes flow { from { stroke-dashoffset: 14; } to { stroke-dashoffset: 0; } }
+.current-flow { animation: flow 0.4s linear infinite; }
+@keyframes pulse-glow { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+.pulse-glow { animation: pulse-glow 1.2s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react" data-type="script">
+const { useState, useRef, useMemo } = React;
+
+// L293D 模組的 pin 座標（相對於模組左上角 0,0）
+// 模組總尺寸 360 x 320（按照片比例）
+const MODULE_PINS = {
+  // 左側螺絲端子
+  'A+':  { x: 35,  y: 70,  side: 'left',   type: 'motor',  label: 'A+',  desc: 'Motor 2 輸出 +' },
+  'A-':  { x: 35,  y: 95,  side: 'left',   type: 'motor',  label: 'A−',  desc: 'Motor 2 輸出 −' },
+  'B-':  { x: 35,  y: 145, side: 'left',   type: 'motor',  label: 'B−',  desc: 'Motor 1 輸出 −' },
+  'B+':  { x: 35,  y: 170, side: 'left',   type: 'motor',  label: 'B+',  desc: 'Motor 1 輸出 +' },
+  'VIN': { x: 35,  y: 230, side: 'left',   type: 'power',  label: 'VIN', desc: '主電源 9~24V' },
+  'GND-power': { x: 35, y: 255, side: 'left', type: 'power', label: 'GND', desc: '電源接地' },
+  // 右側排針
+  'VCC': { x: 325, y: 80,  side: 'right',  type: 'logic',  label: 'VCC', desc: '邏輯 5V' },
+  'GND-logic': { x: 325, y: 105, side: 'right', type: 'logic', label: 'GND', desc: '邏輯接地' },
+  'IN1': { x: 325, y: 130, side: 'right',  type: 'signal', label: 'IN1', desc: 'A 路控制 1（接 D2）' },
+  'IN2': { x: 325, y: 155, side: 'right',  type: 'signal', label: 'IN2', desc: 'A 路控制 2（接 D3）' },
+  'IN3': { x: 325, y: 180, side: 'right',  type: 'signal', label: 'IN3', desc: 'B 路控制 1（接 D4）' },
+  'IN4': { x: 325, y: 205, side: 'right',  type: 'signal', label: 'IN4', desc: 'B 路控制 2（接 D5）' },
+  'EN1': { x: 325, y: 230, side: 'right',  type: 'enable', label: 'EN1', desc: 'A 路啟用（HIGH 才動）' },
+  'EN2': { x: 325, y: 255, side: 'right',  type: 'enable', label: 'EN2', desc: 'B 路啟用（HIGH 才動）' },
+};
+
+// IC 內部對應路徑（從 pin 到 IC 中心的金屬走線）
+const IC_CENTER = { x: 180, y: 160 };
+
+const L293DModule = ({ hoveredPin, onPinEnter, onPinLeave, onPinDown, onPinUp, connectedPins }) => {
+  return (
+    <g transform="translate(50, 50)">
+      {/* PCB 板 */}
+      <rect x="0" y="0" width="360" height="320" rx="8" fill="#1e40af" stroke="#1e3a8a" strokeWidth="2" />
+      <rect x="3" y="3" width="354" height="314" rx="6" fill="#1e3a8a" opacity="0.5" />
+
+      {/* PCB 紋路 */}
+      <pattern id="pcbTexture" width="6" height="6" patternUnits="userSpaceOnUse">
+        <rect width="6" height="6" fill="#1e40af" />
+        <circle cx="3" cy="3" r="0.5" fill="#1e3a8a" />
+      </pattern>
+      <rect x="3" y="3" width="354" height="314" rx="6" fill="url(#pcbTexture)" opacity="0.6" />
+
+      {/* 四個螺絲孔 */}
+      {[[20, 20], [340, 20], [20, 300], [340, 300]].map(([cx, cy], i) => (
+        <g key={i}>
+          <circle cx={cx} cy={cy} r="9" fill="#94a3b8" />
+          <circle cx={cx} cy={cy} r="6" fill="#0f172a" />
+          <circle cx={cx} cy={cy} r="5" fill="#1e293b" />
+        </g>
+      ))}
+
+      {/* 中央 L293D IC（DIP-16） */}
+      <g transform="translate(180, 160)">
+        <rect x="-55" y="-70" width="110" height="140" fill="#1e293b" stroke="#0f172a" strokeWidth="1" />
+        <rect x="-55" y="-70" width="110" height="140" fill="#0f172a" />
+        {/* IC 接腳 */}
+        {[0,1,2,3,4,5,6,7].map(i => {
+          const py = -60 + i * 17;
+          return (
+            <g key={i}>
+              <rect x="-62" y={py-2} width="8" height="4" fill="#cbd5e1" />
+              <rect x="54" y={py-2} width="8" height="4" fill="#cbd5e1" />
+            </g>
+          );
+        })}
+        {/* IC 缺口 */}
+        <path d="M -10 -70 Q 0 -65 10 -70" fill="#1e293b" stroke="#475569" strokeWidth="0.5" />
+        <text y="-25" textAnchor="middle" fill="#94a3b8" fontSize="9">UTC</text>
+        <text y="-8" textAnchor="middle" fill="#e2e8f0" fontSize="14" fontWeight="bold">L293D</text>
+        <text y="6" textAnchor="middle" fill="#94a3b8" fontSize="6">PHILIPPINES</text>
+        <text y="20" textAnchor="middle" fill="#94a3b8" fontSize="7">2024 K1B</text>
+        <circle cx="-40" cy="-58" r="2" fill="#0f172a" stroke="#475569" strokeWidth="0.3" />
+      </g>
+
+      {/* IC 內部金屬路徑（連到亮起的 pin） */}
+      {hoveredPin && MODULE_PINS[hoveredPin] && (
+        <line
+          x1={MODULE_PINS[hoveredPin].x}
+          y1={MODULE_PINS[hoveredPin].y}
+          x2={IC_CENTER.x}
+          y2={IC_CENTER.y}
+          stroke="#fbbf24"
+          strokeWidth="3"
+          strokeLinecap="round"
+          opacity="0.7"
+          strokeDasharray="6 4"
+        >
+          <animate attributeName="opacity" values="0.4;1;0.4" dur="1s" repeatCount="indefinite" />
+        </line>
+      )}
+
+      {/* 左側螺絲端子 - 綠色 */}
+      <g transform="translate(20, 50)">
+        <rect x="0" y="0" width="40" height="65" fill="#16a34a" stroke="#15803d" strokeWidth="1" rx="2" />
+        <text x="50" y="15" fill="#e2e8f0" fontSize="11" fontWeight="bold">A</text>
+        <text x="50" y="58" fill="#94a3b8" fontSize="9">Motor 2</text>
+      </g>
+      <g transform="translate(20, 125)">
+        <rect x="0" y="0" width="40" height="65" fill="#16a34a" stroke="#15803d" strokeWidth="1" rx="2" />
+        <text x="50" y="15" fill="#e2e8f0" fontSize="11" fontWeight="bold">B</text>
+        <text x="50" y="58" fill="#94a3b8" fontSize="9">Motor 1</text>
+      </g>
+      <g transform="translate(20, 210)">
+        <rect x="0" y="0" width="40" height="65" fill="#16a34a" stroke="#15803d" strokeWidth="1" rx="2" />
+        <text x="50" y="55" fill="#fbbf24" fontSize="9" fontWeight="bold">DC 9~24V</text>
+      </g>
+
+      {/* 右上：電容 + 反向二極體 */}
+      <g transform="translate(290, 40)">
+        <circle r="10" fill="#1e293b" stroke="#475569" />
+        <text textAnchor="middle" y="3" fill="#fbbf24" fontSize="8">C1</text>
+      </g>
+
+      {/* 下方：電晶體 + 電源指示燈 */}
+      <g transform="translate(140, 280)">
+        <rect x="-12" y="-15" width="24" height="20" fill="#0f172a" stroke="#475569" strokeWidth="1" rx="2" />
+        <text y="-2" textAnchor="middle" fill="#94a3b8" fontSize="6">Q1</text>
+      </g>
+      <g transform="translate(240, 280)">
+        <circle r="6" fill="#dc2626" />
+        <circle r="3" fill="#fca5a5" />
+        <text y="20" textAnchor="middle" fill="#94a3b8" fontSize="7">PWR</text>
+      </g>
+
+      {/* Pin 渲染（hover 發亮、可拖曳） */}
+      {Object.entries(MODULE_PINS).map(([id, p]) => {
+        const isHovered = hoveredPin === id;
+        const isConnected = connectedPins && connectedPins[id];
+        const color = p.type === 'motor' ? '#fbbf24' :
+                      p.type === 'power' ? '#ef4444' :
+                      p.type === 'logic' ? '#3b82f6' :
+                      p.type === 'enable' ? '#a855f7' : '#22c55e';
+        return (
+          <g key={id}
+            onMouseEnter={() => onPinEnter(id)}
+            onMouseLeave={() => onPinLeave()}
+            onMouseDown={(e) => onPinDown(id, e)}
+            onMouseUp={(e) => onPinUp(id, e)}
+            style={{ cursor: 'grab' }}
+          >
+            {/* 脈動光環 */}
+            {(isHovered || isConnected) && (
+              <circle cx={p.x} cy={p.y} r="10" fill={color} opacity="0.5">
+                <animate attributeName="r" values="10;24;10" dur="1.2s" repeatCount="indefinite" />
+                <animate attributeName="opacity" values="0.6;0;0.6" dur="1.2s" repeatCount="indefinite" />
+              </circle>
+            )}
+            {/* 排針底座 */}
+            {p.side === 'right' && (
+              <rect x={p.x-5} y={p.y-3} width="10" height="6" fill="#0f172a" />
+            )}
+            {/* Pin 點 */}
+            <circle cx={p.x} cy={p.y} r="7" fill="#0f172a" />
+            <circle cx={p.x} cy={p.y} r="5" fill={color} stroke={isHovered ? 'white' : '#1e293b'} strokeWidth={isHovered ? 2 : 1} />
+            {/* Label */}
+            <text
+              x={p.side === 'left' ? p.x + 16 : p.x - 16}
+              y={p.y + 3}
+              textAnchor={p.side === 'left' ? 'start' : 'end'}
+              fill={isHovered ? '#fbbf24' : '#e2e8f0'}
+              fontSize="11"
+              fontWeight="bold"
+              style={{pointerEvents:'none'}}
+            >
+              {p.label}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* 底部排針 VCC/A-/A+/B-/B+ */}
+      {['VCC', 'A−', 'A+', 'B−', 'B+'].map((label, i) => (
+        <g key={`bot-${label}`} transform={`translate(${110 + i * 35}, 295)`}>
+          <rect x="-5" y="-3" width="10" height="6" fill="#0f172a" />
+          <circle cx="0" cy="0" r="3" fill="#94a3b8" />
+          <text x="0" y="-8" textAnchor="middle" fill="#cbd5e1" fontSize="8" fontWeight="bold">{label}</text>
+        </g>
+      ))}
+    </g>
+  );
+};
+
+function App() {
+  const [hoveredPin, setHoveredPin] = useState(null);
+  const [activeWire, setActiveWire] = useState(null);
+  const [wires, setWires] = useState([]);
+  const svgRef = useRef(null);
+
+  // 虛擬「Nano D2」目標 pin（測試連線用，等 Phase B 換成真實 Nano）
+  const VIRTUAL_NANO_D2 = { x: 620, y: 230, color: '#fbbf24', label: 'Nano D2 (假) ' };
+
+  const getSvgCoords = (e) => {
+    const rect = svgRef.current.getBoundingClientRect();
+    const scaleX = 900 / rect.width;
+    const scaleY = 500 / rect.height;
+    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+  };
+
+  const handlePinDown = (pinId, e) => {
+    e.stopPropagation();
+    const c = getSvgCoords(e);
+    setActiveWire({ from: pinId, x: c.x, y: c.y });
+  };
+
+  const handlePinUp = (pinId, e) => {
+    e.stopPropagation();
+    if (!activeWire) return;
+    setActiveWire(null);
+  };
+
+  const handleSvgMouseMove = (e) => {
+    if (!activeWire) return;
+    const c = getSvgCoords(e);
+    setActiveWire({ ...activeWire, x: c.x, y: c.y });
+  };
+
+  const handleSvgMouseUp = (e) => {
+    if (!activeWire) return;
+    // 檢查是否拖到虛擬 Nano D2
+    const c = getSvgCoords(e);
+    const dist = Math.hypot(c.x - VIRTUAL_NANO_D2.x, c.y - VIRTUAL_NANO_D2.y);
+    if (dist < 30 && activeWire.from === 'IN1') {
+      setWires([...wires, { from: activeWire.from, to: 'nano-d2' }]);
+    }
+    setActiveWire(null);
+  };
+
+  const connectedPins = useMemo(() => {
+    const map = {};
+    wires.forEach(w => { map[w.from] = true; });
+    return map;
+  }, [wires]);
+
+  return (
+    <div className="min-h-screen p-4 text-slate-200 font-sans">
+      <div className="max-w-6xl mx-auto">
+        <div className="bg-slate-800 p-4 rounded-lg border border-slate-700 mb-3">
+          <div className="text-xs text-cyan-400 font-bold tracking-wider">L3 PHASE A — 外觀確認版</div>
+          <div className="text-xl font-bold">🔬 L293D 1:1 寫實 + Pin 發亮測試</div>
+          <div className="text-xs text-slate-400 mt-1">
+            Hover 任一個 pin → 看 pin 脈動發光 + IC 內部金屬走線亮起。試拖 IN1 到右邊「虛擬 Nano D2」確認連線機制。
+          </div>
+        </div>
+
+        <div className="bg-[#0b1221] rounded-xl shadow-2xl border border-slate-700 overflow-hidden">
+          <svg
+            ref={svgRef}
+            viewBox="0 0 900 500"
+            className="w-full h-auto"
+            onMouseMove={handleSvgMouseMove}
+            onMouseUp={handleSvgMouseUp}
+            style={{ userSelect: 'none' }}
+          >
+            <defs>
+              <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+                <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" strokeWidth="1"/>
+              </pattern>
+            </defs>
+            <rect width="900" height="500" fill="url(#grid)" />
+
+            {/* L293D 模組 */}
+            <L293DModule
+              hoveredPin={hoveredPin}
+              onPinEnter={setHoveredPin}
+              onPinLeave={() => setHoveredPin(null)}
+              onPinDown={handlePinDown}
+              onPinUp={handlePinUp}
+              connectedPins={connectedPins}
+            />
+
+            {/* 已連好的線 */}
+            {wires.map((w, i) => {
+              const from = MODULE_PINS[w.from];
+              return (
+                <g key={i}>
+                  <line
+                    x1={50 + from.x} y1={50 + from.y}
+                    x2={VIRTUAL_NANO_D2.x} y2={VIRTUAL_NANO_D2.y}
+                    stroke="#fbbf24" strokeWidth="4" strokeLinecap="round"
+                  />
+                  <line
+                    x1={50 + from.x} y1={50 + from.y}
+                    x2={VIRTUAL_NANO_D2.x} y2={VIRTUAL_NANO_D2.y}
+                    stroke="white" strokeWidth="2" strokeDasharray="6 8"
+                    className="current-flow"
+                  />
+                </g>
+              );
+            })}
+
+            {/* 拖曳虛線 */}
+            {activeWire && (
+              <line
+                x1={50 + MODULE_PINS[activeWire.from].x}
+                y1={50 + MODULE_PINS[activeWire.from].y}
+                x2={activeWire.x} y2={activeWire.y}
+                stroke="#fbbf24" strokeWidth="3" strokeDasharray="8 4" opacity="0.8"
+              />
+            )}
+
+            {/* 虛擬 Nano D2（測試用） */}
+            <g transform={`translate(${VIRTUAL_NANO_D2.x}, ${VIRTUAL_NANO_D2.y})`}>
+              <rect x="-50" y="-30" width="100" height="60" rx="4" fill="#0e7490" stroke="#155e75" strokeWidth="2" />
+              <text y="-8" textAnchor="middle" fill="white" fontSize="10" fontWeight="bold">NANO（假）</text>
+              <text y="6" textAnchor="middle" fill="#fbbf24" fontSize="9">D2</text>
+              <circle cx="0" cy="20" r="6" fill="#fbbf24" stroke="white" strokeWidth="2" />
+              <text x="60" y="-20" fill="#94a3b8" fontSize="9" textAnchor="start">↑ Phase B 換成</text>
+              <text x="60" y="-8" fill="#94a3b8" fontSize="9" textAnchor="start">真實 Nano 板</text>
+              <text x="60" y="4" fill="#94a3b8" fontSize="9" textAnchor="start">（等你傳照片）</text>
+            </g>
+
+            {/* Hover 提示 */}
+            {hoveredPin && MODULE_PINS[hoveredPin] && (
+              <g transform="translate(450, 470)">
+                <rect x="-200" y="-20" width="400" height="30" rx="6" fill="#0f172a" stroke="#fbbf24" />
+                <text textAnchor="middle" y="0" fill="#fbbf24" fontSize="11" fontWeight="bold">{MODULE_PINS[hoveredPin].label}</text>
+                <text textAnchor="middle" y="12" fill="white" fontSize="10">{MODULE_PINS[hoveredPin].desc}</text>
+              </g>
+            )}
+          </svg>
+        </div>
+
+        <div className="mt-3 grid grid-cols-3 gap-3">
+          <div className="bg-slate-800 p-3 rounded-lg border border-slate-700">
+            <div className="font-bold text-cyan-400 mb-2 text-xs">✅ 外觀確認重點</div>
+            <ul className="text-[11px] text-slate-300 space-y-1 ml-3 list-disc">
+              <li>PCB 深藍色 ✓</li>
+              <li>L293D IC 中央 DIP-16 ✓</li>
+              <li>左側 3 組綠色螺絲端子 ✓</li>
+              <li>右側 8 排針 (VCC/GND/IN1~4/EN1/EN2) ✓</li>
+              <li>底部 5 排針 ✓</li>
+            </ul>
+          </div>
+          <div className="bg-slate-800 p-3 rounded-lg border border-slate-700">
+            <div className="font-bold text-yellow-400 mb-2 text-xs">⚡ EN1/EN2 重點</div>
+            <p className="text-[11px] text-slate-300">
+              EN 沒拉 HIGH，IN 接再對馬達也不動！教學要先講這個，不然學生會被卡。
+            </p>
+          </div>
+          <div className="bg-slate-800 p-3 rounded-lg border border-slate-700">
+            <div className="font-bold text-pink-400 mb-2 text-xs">📋 你要驗收的</div>
+            <ul className="text-[11px] text-slate-300 space-y-1 ml-3 list-disc">
+              <li>L293D 外觀像不像實體？</li>
+              <li>Pin 順序對嗎？</li>
+              <li>發亮效果順眼嗎？</li>
+              <li>IC 內部路徑亮起的概念 OK？</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>

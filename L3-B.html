@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>L3 Phase B — L293D + Nano 1:1 雙元件外觀確認</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+body { background: #0f172a; margin: 0; }
+@keyframes flow { from { stroke-dashoffset: 14; } to { stroke-dashoffset: 0; } }
+.current-flow { animation: flow 0.4s linear infinite; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react" data-type="script">
+const { useState, useRef } = React;
+
+// === L293D 模組 pin ===（按 KIRIN 圖 1:1）
+const L293D_PINS = {
+  'A+':   { x: 35, y: 70,  side: 'L', color: '#fbbf24', label: 'A+',  desc: 'Motor 2 輸出 +' },
+  'A-':   { x: 35, y: 95,  side: 'L', color: '#fbbf24', label: 'A−',  desc: 'Motor 2 輸出 −' },
+  'B-':   { x: 35, y: 145, side: 'L', color: '#fbbf24', label: 'B−',  desc: 'Motor 1 輸出 −' },
+  'B+':   { x: 35, y: 170, side: 'L', color: '#fbbf24', label: 'B+',  desc: 'Motor 1 輸出 +' },
+  'VIN':  { x: 35, y: 230, side: 'L', color: '#ef4444', label: 'VIN', desc: '主電源 9~24V' },
+  'GND-P':{ x: 35, y: 255, side: 'L', color: '#3b82f6', label: 'GND', desc: '電源接地' },
+  'VCC':  { x: 325, y: 80,  side: 'R', color: '#ef4444', label: 'VCC', desc: '邏輯 5V' },
+  'GND-L':{ x: 325, y: 105, side: 'R', color: '#3b82f6', label: 'GND', desc: '邏輯接地' },
+  'IN1':  { x: 325, y: 130, side: 'R', color: '#22c55e', label: 'IN1', desc: 'A 路控制 1（接 Nano D2）' },
+  'IN2':  { x: 325, y: 155, side: 'R', color: '#22c55e', label: 'IN2', desc: 'A 路控制 2（接 Nano D3）' },
+  'IN3':  { x: 325, y: 180, side: 'R', color: '#22c55e', label: 'IN3', desc: 'B 路控制 1（接 Nano D4）' },
+  'IN4':  { x: 325, y: 205, side: 'R', color: '#22c55e', label: 'IN4', desc: 'B 路控制 2（接 Nano D5）' },
+  'EN1':  { x: 325, y: 230, side: 'R', color: '#a855f7', label: 'EN1', desc: 'A 路啟用（HIGH 才動）' },
+  'EN2':  { x: 325, y: 255, side: 'R', color: '#a855f7', label: 'EN2', desc: 'B 路啟用（HIGH 才動）' },
+};
+const L293D_IC_CENTER = { x: 180, y: 160 };
+
+// === Arduino Nano pin ===（按 KIRIN 照片 1:1，Mini USB 朝上垂直放置）
+const NANO_PINS = {
+  // 左側
+  'D13':   { x: 18, y: 70,  side: 'L', color: '#fbbf24', desc: 'Digital 13（內建 LED）' },
+  '3V3':   { x: 18, y: 95,  side: 'L', color: '#ef4444', desc: '3.3V 輸出' },
+  'AREF':  { x: 18, y: 120, side: 'L', color: '#94a3b8', desc: '類比參考電壓' },
+  'A0':    { x: 18, y: 145, side: 'L', color: '#10b981', desc: 'Analog 0' },
+  'A1':    { x: 18, y: 170, side: 'L', color: '#10b981', desc: 'Analog 1' },
+  'A2':    { x: 18, y: 195, side: 'L', color: '#10b981', desc: 'Analog 2' },
+  'A3':    { x: 18, y: 220, side: 'L', color: '#10b981', desc: 'Analog 3' },
+  'A4':    { x: 18, y: 245, side: 'L', color: '#10b981', desc: 'A4 / SDA' },
+  'A5':    { x: 18, y: 270, side: 'L', color: '#10b981', desc: 'A5 / SCL' },
+  'A6':    { x: 18, y: 295, side: 'L', color: '#10b981', desc: 'Analog 6' },
+  'A7':    { x: 18, y: 320, side: 'L', color: '#10b981', desc: 'Analog 7' },
+  '5V':    { x: 18, y: 345, side: 'L', color: '#ef4444', desc: '5V 輸出（給 L293D VCC）' },
+  'RST-L': { x: 18, y: 370, side: 'L', color: '#a855f7', desc: 'Reset' },
+  'GND-L': { x: 18, y: 395, side: 'L', color: '#3b82f6', desc: '接地' },
+  'VIN-N': { x: 18, y: 420, side: 'L', color: '#dc2626', desc: '外部電源輸入' },
+  // 右側
+  'D12':   { x: 182, y: 70,  side: 'R', color: '#fbbf24', desc: 'Digital 12' },
+  'D11':   { x: 182, y: 95,  side: 'R', color: '#fbbf24', desc: 'Digital 11（PWM，接 IR）' },
+  'D10':   { x: 182, y: 120, side: 'R', color: '#fbbf24', desc: 'Digital 10（PWM）' },
+  'D9':    { x: 182, y: 145, side: 'R', color: '#fbbf24', desc: 'Digital 9（PWM）' },
+  'D8':    { x: 182, y: 170, side: 'R', color: '#fbbf24', desc: 'Digital 8' },
+  'D7':    { x: 182, y: 195, side: 'R', color: '#fbbf24', desc: 'Digital 7' },
+  'D6':    { x: 182, y: 220, side: 'R', color: '#fbbf24', desc: 'Digital 6（PWM）' },
+  'D5':    { x: 182, y: 245, side: 'R', color: '#fbbf24', desc: 'D5（PWM，接 IN4）' },
+  'D4':    { x: 182, y: 270, side: 'R', color: '#fbbf24', desc: 'D4（接 IN3）' },
+  'D3':    { x: 182, y: 295, side: 'R', color: '#fbbf24', desc: 'D3（PWM, INT1 中斷腳，接 IN2）' },
+  'D2':    { x: 182, y: 320, side: 'R', color: '#fbbf24', desc: 'D2（INT0 中斷腳，接 IN1）' },
+  'GND-R': { x: 182, y: 345, side: 'R', color: '#3b82f6', desc: '接地' },
+  'RST-R': { x: 182, y: 370, side: 'R', color: '#a855f7', desc: 'Reset' },
+  'D1':    { x: 182, y: 395, side: 'R', color: '#06b6d4', desc: 'D1 / RXD（序列接收，少用）' },
+  'D0':    { x: 182, y: 420, side: 'R', color: '#06b6d4', desc: 'D0 / TXD（序列發送，少用）' },
+};
+const NANO_IC_CENTER = { x: 100, y: 200 };
+
+// === L293D 模組元件 ===
+const L293DModule = ({ ox, oy, hoveredPin, onPinEnter, onPinLeave, onPinDown, onPinUp }) => (
+  <g transform={`translate(${ox}, ${oy})`}>
+    {/* PCB */}
+    <rect x="0" y="0" width="360" height="320" rx="8" fill="#1e40af" stroke="#1e3a8a" strokeWidth="2" />
+    <rect x="3" y="3" width="354" height="314" rx="6" fill="#1e3a8a" opacity="0.4" />
+    {/* 螺絲孔 */}
+    {[[20,20],[340,20],[20,300],[340,300]].map(([cx,cy],i)=>(
+      <g key={i}><circle cx={cx} cy={cy} r="9" fill="#94a3b8"/><circle cx={cx} cy={cy} r="5" fill="#0f172a"/></g>
+    ))}
+    {/* L293D IC */}
+    <g transform="translate(180, 160)">
+      <rect x="-55" y="-70" width="110" height="140" fill="#0f172a" stroke="#1e293b" strokeWidth="1" />
+      {[0,1,2,3,4,5,6,7].map(i=>{const py=-60+i*17;return(
+        <g key={i}><rect x="-62" y={py-2} width="8" height="4" fill="#cbd5e1"/><rect x="54" y={py-2} width="8" height="4" fill="#cbd5e1"/></g>
+      )})}
+      <path d="M -10 -70 Q 0 -65 10 -70" fill="#1e293b" />
+      <text y="-25" textAnchor="middle" fill="#94a3b8" fontSize="9">UTC</text>
+      <text y="-8" textAnchor="middle" fill="#e2e8f0" fontSize="14" fontWeight="bold">L293D</text>
+      <text y="6" textAnchor="middle" fill="#94a3b8" fontSize="6">PHILIPPINES</text>
+      <text y="20" textAnchor="middle" fill="#94a3b8" fontSize="7">2024 K1B</text>
+      <circle cx="-40" cy="-58" r="2" fill="#0f172a" stroke="#475569"/>
+    </g>
+    {/* 內部金屬走線（hover 時顯示） */}
+    {hoveredPin && L293D_PINS[hoveredPin] && (
+      <line x1={L293D_PINS[hoveredPin].x} y1={L293D_PINS[hoveredPin].y}
+        x2={L293D_IC_CENTER.x} y2={L293D_IC_CENTER.y}
+        stroke="#fbbf24" strokeWidth="3" strokeLinecap="round" opacity="0.8" strokeDasharray="6 4">
+        <animate attributeName="opacity" values="0.5;1;0.5" dur="1s" repeatCount="indefinite"/>
+      </line>
+    )}
+    {/* 綠色螺絲端子 */}
+    <g transform="translate(20, 50)"><rect width="40" height="65" fill="#16a34a" stroke="#15803d" rx="2"/><text x="50" y="15" fill="#e2e8f0" fontSize="11" fontWeight="bold">A</text><text x="50" y="58" fill="#94a3b8" fontSize="9">Motor 2</text></g>
+    <g transform="translate(20, 125)"><rect width="40" height="65" fill="#16a34a" stroke="#15803d" rx="2"/><text x="50" y="15" fill="#e2e8f0" fontSize="11" fontWeight="bold">B</text><text x="50" y="58" fill="#94a3b8" fontSize="9">Motor 1</text></g>
+    <g transform="translate(20, 210)"><rect width="40" height="65" fill="#16a34a" stroke="#15803d" rx="2"/><text x="50" y="55" fill="#fbbf24" fontSize="9" fontWeight="bold">DC 9~24V</text></g>
+    {/* C1 電容 */}
+    <g transform="translate(290, 40)"><circle r="10" fill="#1e293b" stroke="#475569"/><text textAnchor="middle" y="3" fill="#fbbf24" fontSize="8">C1</text></g>
+    {/* PWR LED */}
+    <g transform="translate(240, 280)"><circle r="6" fill="#dc2626"/><circle r="3" fill="#fca5a5"/><text y="20" textAnchor="middle" fill="#94a3b8" fontSize="7">PWR</text></g>
+    {/* Pin */}
+    {Object.entries(L293D_PINS).map(([id,p])=>{
+      const isHovered = hoveredPin===id;
+      return(<g key={id}
+        onMouseEnter={()=>onPinEnter(id,'L293D')}
+        onMouseLeave={onPinLeave}
+        onMouseDown={(e)=>onPinDown(id,'L293D',e)}
+        onMouseUp={(e)=>onPinUp(id,'L293D',e)}
+        style={{cursor:'grab'}}>
+        {isHovered && <circle cx={p.x} cy={p.y} r="10" fill={p.color} opacity="0.5">
+          <animate attributeName="r" values="10;24;10" dur="1.2s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0.6;0;0.6" dur="1.2s" repeatCount="indefinite"/>
+        </circle>}
+        {p.side==='R' && <rect x={p.x-5} y={p.y-3} width="10" height="6" fill="#0f172a"/>}
+        <circle cx={p.x} cy={p.y} r="6" fill="#0f172a"/>
+        <circle cx={p.x} cy={p.y} r="5" fill={p.color} stroke={isHovered?'white':'#1e293b'} strokeWidth={isHovered?2:1}/>
+        <text x={p.side==='L'?p.x+14:p.x-14} y={p.y+3} textAnchor={p.side==='L'?'start':'end'}
+          fill={isHovered?'#fbbf24':'#e2e8f0'} fontSize="11" fontWeight="bold" style={{pointerEvents:'none'}}>{p.label}</text>
+      </g>);
+    })}
+  </g>
+);
+
+// === Arduino Nano 元件 ===
+const NanoBoard = ({ ox, oy, hoveredPin, onPinEnter, onPinLeave, onPinDown, onPinUp }) => (
+  <g transform={`translate(${ox}, ${oy})`}>
+    {/* PCB */}
+    <rect x="0" y="0" width="200" height="500" rx="4" fill="#1e40af" stroke="#1e3a8a" strokeWidth="2" />
+    <rect x="3" y="3" width="194" height="494" rx="3" fill="#1e3a8a" opacity="0.4" />
+    {/* Mini USB 接口 */}
+    <g transform="translate(100, 5)">
+      <rect x="-22" y="0" width="44" height="35" fill="#94a3b8" stroke="#475569" rx="2"/>
+      <rect x="-18" y="3" width="36" height="28" fill="#cbd5e1"/>
+      <rect x="-12" y="8" width="24" height="18" fill="#475569"/>
+    </g>
+    {/* CH340 SMD */}
+    <g transform="translate(100, 75)">
+      <rect x="-15" y="-12" width="30" height="24" fill="#1e293b" stroke="#0f172a" strokeWidth="0.5"/>
+      <text y="3" textAnchor="middle" fill="#94a3b8" fontSize="6">CH340</text>
+    </g>
+    {/* ATmega328P SMD */}
+    <g transform="translate(100, 200)">
+      <rect x="-32" y="-32" width="64" height="64" fill="#1e293b" stroke="#0f172a" strokeWidth="1"/>
+      {[0,1,2,3,4,5,6,7].map(i=>(
+        <g key={i}>
+          <rect x={-30+i*7+3} y="-37" width="3" height="5" fill="#cbd5e1"/>
+          <rect x={-30+i*7+3} y="32" width="3" height="5" fill="#cbd5e1"/>
+          <rect x="-37" y={-30+i*7+3} width="5" height="3" fill="#cbd5e1"/>
+          <rect x="32" y={-30+i*7+3} width="5" height="3" fill="#cbd5e1"/>
+        </g>
+      ))}
+      <circle cx="-23" cy="-23" r="2" fill="#475569"/>
+      <text y="-6" textAnchor="middle" fill="#e2e8f0" fontSize="8" fontWeight="bold">ATMEGA</text>
+      <text y="5" textAnchor="middle" fill="#e2e8f0" fontSize="8" fontWeight="bold">328P</text>
+      <text y="16" textAnchor="middle" fill="#94a3b8" fontSize="6">AU</text>
+    </g>
+    {/* 內部金屬走線（hover 時顯示） */}
+    {hoveredPin && NANO_PINS[hoveredPin] && (
+      <line x1={NANO_PINS[hoveredPin].x} y1={NANO_PINS[hoveredPin].y}
+        x2={NANO_IC_CENTER.x} y2={NANO_IC_CENTER.y}
+        stroke="#fbbf24" strokeWidth="3" strokeLinecap="round" opacity="0.8" strokeDasharray="6 4">
+        <animate attributeName="opacity" values="0.5;1;0.5" dur="1s" repeatCount="indefinite"/>
+      </line>
+    )}
+    {/* NANO 標誌 */}
+    <text x="100" y="265" textAnchor="middle" fill="#e2e8f0" fontSize="10" fontWeight="bold">NANO</text>
+    {/* Reset 按鈕 */}
+    <g transform="translate(100, 290)">
+      <rect x="-15" y="-10" width="30" height="20" fill="#1e293b" stroke="#475569" rx="2"/>
+      <circle r="6" fill="#475569" stroke="#94a3b8" strokeWidth="1"/>
+    </g>
+    {/* 4 顆 LED */}
+    {[{x:65,l:'PWR',c:'#22c55e'},{x:85,l:'L',c:'#fbbf24'},{x:105,l:'TX',c:'#3b82f6'},{x:125,l:'RX',c:'#3b82f6'}].map((led,i)=>(
+      <g key={i}><circle cx={led.x} cy="325" r="2.5" fill={led.c}/><text x={led.x} y="338" textAnchor="middle" fill="#94a3b8" fontSize="6">{led.l}</text></g>
+    ))}
+    {/* 底部 ICSP 6 pin */}
+    <g transform="translate(100, 465)">
+      {[0,1,2].map(c=>(<g key={c}>
+        <circle cx={-10+c*10} cy="-5" r="2.5" fill="#fbbf24"/>
+        <circle cx={-10+c*10} cy="5" r="2.5" fill="#fbbf24"/>
+      </g>))}
+      <text y="22" textAnchor="middle" fill="#94a3b8" fontSize="6">ICSP</text>
+    </g>
+    {/* Pin */}
+    {Object.entries(NANO_PINS).map(([id,p])=>{
+      const isHovered=hoveredPin===id;
+      const showLabel = id.replace(/-[LRN]$/,'').replace('VIN-N','VIN');
+      return(<g key={id}
+        onMouseEnter={()=>onPinEnter(id,'NANO')}
+        onMouseLeave={onPinLeave}
+        onMouseDown={(e)=>onPinDown(id,'NANO',e)}
+        onMouseUp={(e)=>onPinUp(id,'NANO',e)}
+        style={{cursor:'grab'}}>
+        {isHovered && <circle cx={p.x} cy={p.y} r="8" fill={p.color} opacity="0.5">
+          <animate attributeName="r" values="8;20;8" dur="1.2s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0.6;0;0.6" dur="1.2s" repeatCount="indefinite"/>
+        </circle>}
+        <rect x={p.x-4} y={p.y-3} width="8" height="6" fill="#0f172a"/>
+        <circle cx={p.x} cy={p.y} r="4" fill={p.color} stroke={isHovered?'white':'#1e293b'} strokeWidth={isHovered?2:1}/>
+        <text x={p.side==='L'?p.x+10:p.x-10} y={p.y+3} textAnchor={p.side==='L'?'start':'end'}
+          fill={isHovered?'#fbbf24':'#cbd5e1'} fontSize="9" fontWeight="bold" style={{pointerEvents:'none'}}>
+          {showLabel}
+        </text>
+      </g>);
+    })}
+  </g>
+);
+
+function App() {
+  const [hoveredPin, setHoveredPin] = useState(null);
+  const [hoveredBoard, setHoveredBoard] = useState(null); // 'L293D' or 'NANO'
+  const [activeWire, setActiveWire] = useState(null);
+  const [wires, setWires] = useState([]);
+  const svgRef = useRef(null);
+
+  const getSvgCoords = (e) => {
+    const rect = svgRef.current.getBoundingClientRect();
+    return { x: (e.clientX - rect.left) * (1200/rect.width), y: (e.clientY - rect.top) * (600/rect.height) };
+  };
+
+  const handlePinEnter = (id, board) => { setHoveredPin(id); setHoveredBoard(board); };
+  const handlePinLeave = () => { setHoveredPin(null); setHoveredBoard(null); };
+  const handlePinDown = (id, board, e) => {
+    e.stopPropagation();
+    const c = getSvgCoords(e);
+    setActiveWire({ from: id, fromBoard: board, x: c.x, y: c.y });
+  };
+  const handlePinUp = (id, board, e) => {
+    e.stopPropagation();
+    if (!activeWire) return;
+    if (activeWire.fromBoard !== board) {
+      setWires([...wires, { from: activeWire.from, fromBoard: activeWire.fromBoard, to: id, toBoard: board }]);
+    }
+    setActiveWire(null);
+  };
+  const handleSvgMove = (e) => {
+    if (!activeWire) return;
+    const c = getSvgCoords(e);
+    setActiveWire({ ...activeWire, x: c.x, y: c.y });
+  };
+  const handleSvgUp = () => setActiveWire(null);
+
+  const L293D_OFFSET = { x: 80, y: 130 };
+  const NANO_OFFSET = { x: 880, y: 50 };
+
+  const getPinAbs = (id, board) => {
+    if (board === 'L293D') return { x: L293D_OFFSET.x + L293D_PINS[id].x, y: L293D_OFFSET.y + L293D_PINS[id].y };
+    if (board === 'NANO') return { x: NANO_OFFSET.x + NANO_PINS[id].x, y: NANO_OFFSET.y + NANO_PINS[id].y };
+    return { x: 0, y: 0 };
+  };
+
+  const hoveredInfo = hoveredPin && hoveredBoard ? (hoveredBoard==='L293D'?L293D_PINS[hoveredPin]:NANO_PINS[hoveredPin]) : null;
+
+  return (
+    <div className="min-h-screen p-3 text-slate-200 font-sans">
+      <div className="max-w-7xl mx-auto">
+        <div className="bg-slate-800 p-3 rounded-lg border border-slate-700 mb-2 flex justify-between items-center">
+          <div>
+            <div className="text-xs text-cyan-400 font-bold tracking-wider">L3 PHASE B — 雙元件外觀確認</div>
+            <div className="text-lg font-bold">🔬 L293D + Arduino Nano 都 1:1 寫實</div>
+            <div className="text-xs text-slate-400">Hover 任一 pin → 板子內部金屬走線亮起。試從 L293D IN1 拖線到 Nano D2。</div>
+          </div>
+          <button onClick={() => setWires([])} className="px-3 py-1 text-xs font-bold bg-orange-900/50 border border-orange-500 rounded text-orange-200">🔄 清線</button>
+        </div>
+
+        <div className="bg-[#0b1221] rounded-xl shadow-2xl border border-slate-700 overflow-hidden">
+          <svg ref={svgRef} viewBox="0 0 1200 600" className="w-full h-auto"
+            onMouseMove={handleSvgMove} onMouseUp={handleSvgUp}
+            style={{userSelect:'none'}}>
+            <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" strokeWidth="1"/>
+            </pattern>
+            <rect width="1200" height="600" fill="url(#grid)"/>
+
+            {/* 元件名稱 */}
+            <text x="260" y="100" textAnchor="middle" fill="#fbbf24" fontSize="14" fontWeight="bold">L293D 雙路電機驅動模組</text>
+            <text x="980" y="35" textAnchor="middle" fill="#fbbf24" fontSize="14" fontWeight="bold">Arduino Nano</text>
+
+            <L293DModule ox={L293D_OFFSET.x} oy={L293D_OFFSET.y}
+              hoveredPin={hoveredBoard==='L293D'?hoveredPin:null}
+              onPinEnter={handlePinEnter} onPinLeave={handlePinLeave}
+              onPinDown={handlePinDown} onPinUp={handlePinUp}/>
+            <NanoBoard ox={NANO_OFFSET.x} oy={NANO_OFFSET.y}
+              hoveredPin={hoveredBoard==='NANO'?hoveredPin:null}
+              onPinEnter={handlePinEnter} onPinLeave={handlePinLeave}
+              onPinDown={handlePinDown} onPinUp={handlePinUp}/>
+
+            {/* 已連線 */}
+            {wires.map((w,i)=>{
+              const a = getPinAbs(w.from, w.fromBoard);
+              const b = getPinAbs(w.to, w.toBoard);
+              return(<g key={i}>
+                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#fbbf24" strokeWidth="4" strokeLinecap="round"/>
+                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="white" strokeWidth="2" strokeDasharray="6 8" className="current-flow"/>
+              </g>);
+            })}
+
+            {/* 拖曳虛線 */}
+            {activeWire && (() => {
+              const a = getPinAbs(activeWire.from, activeWire.fromBoard);
+              return <line x1={a.x} y1={a.y} x2={activeWire.x} y2={activeWire.y}
+                stroke="#fbbf24" strokeWidth="3" strokeDasharray="8 4" opacity="0.8"/>;
+            })()}
+
+            {/* hover 提示 */}
+            {hoveredInfo && (
+              <g transform="translate(600, 565)">
+                <rect x="-220" y="-20" width="440" height="32" rx="6" fill="#0f172a" stroke="#fbbf24"/>
+                <text textAnchor="middle" y="-2" fill="#fbbf24" fontSize="11" fontWeight="bold">[{hoveredBoard}] {hoveredInfo.label || hoveredPin.replace(/-[LRN]$/,'')}</text>
+                <text textAnchor="middle" y="10" fill="white" fontSize="9">{hoveredInfo.desc}</text>
+              </g>
+            )}
+          </svg>
+        </div>
+
+        <div className="mt-3 grid grid-cols-3 gap-3">
+          <div className="bg-slate-800 p-3 rounded-lg border border-slate-700">
+            <div className="font-bold text-cyan-400 mb-2 text-xs">✅ L293D 你要驗收</div>
+            <ul className="text-[11px] text-slate-300 space-y-1 ml-3 list-disc">
+              <li>深藍 PCB + 中央 DIP-16</li>
+              <li>左 3 組綠端子 (A/B/VIN)</li>
+              <li>右 8 排針 (VCC/GND/IN1~4/EN1/EN2)</li>
+              <li>底部 5 排針 + 螺絲孔 + PWR LED</li>
+            </ul>
+          </div>
+          <div className="bg-slate-800 p-3 rounded-lg border border-slate-700">
+            <div className="font-bold text-cyan-400 mb-2 text-xs">✅ Nano 你要驗收</div>
+            <ul className="text-[11px] text-slate-300 space-y-1 ml-3 list-disc">
+              <li>Mini USB 接口在頂端</li>
+              <li>ATmega328P SMD 中央</li>
+              <li>左 15 pin（D13~VIN）</li>
+              <li>右 15 pin（D12~D2~TX1）</li>
+              <li>底部 ICSP 6 pin + 4 LED</li>
+            </ul>
+          </div>
+          <div className="bg-slate-800 p-3 rounded-lg border border-slate-700">
+            <div className="font-bold text-pink-400 mb-2 text-xs">📋 你看的是這個</div>
+            <ul className="text-[11px] text-slate-300 space-y-1 ml-3 list-disc">
+              <li>Hover pin → 板子內部金屬走線亮</li>
+              <li>從 IN1 拖到 D2 試試</li>
+              <li>確認外觀 1:1 沒問題</li>
+              <li>下一步：加連線判定 + 整合馬達</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

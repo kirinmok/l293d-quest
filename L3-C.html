@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>L3 Phase C — Nano 插麵包板 + L293D 寫實連連看</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/babel-standalone@6.26.0/babel.min.js"></script>
+<style>
+body { background: #0f172a; margin: 0; }
+@keyframes flow { from { stroke-dashoffset: 14; } to { stroke-dashoffset: 0; } }
+.current-flow { animation: flow 0.4s linear infinite; }
+@keyframes wrongShake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-4px)} 75%{transform:translateX(4px)} }
+.wrong-shake { animation: wrongShake 0.3s; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="errbox" style="position:fixed;top:0;left:0;right:0;max-height:50vh;overflow:auto;background:#dc2626;color:white;padding:12px;z-index:9999;font-family:monospace;font-size:11px;white-space:pre-wrap;display:none;"></div>
+<script>
+function showErr(msg) {
+  const el = document.getElementById('errbox');
+  el.style.display = 'block';
+  el.textContent += msg + '\n\n';
+}
+window.addEventListener('error', (e) => {
+  showErr('🔴 ERROR: ' + e.message + '\n@ ' + (e.filename||'inline') + ':' + (e.lineno||'?') + ':' + (e.colno||'?') + '\n' + (e.error && e.error.stack ? e.error.stack : ''));
+}, true);
+window.addEventListener('unhandledrejection', (e) => {
+  showErr('🔴 PROMISE REJECTED: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+});
+// 用 setTimeout 檢查 React 是否成功 mount
+setTimeout(() => {
+  const root = document.getElementById('root');
+  if (root && root.children.length === 0) {
+    showErr('⚠️ React 沒有 mount（root 是空的）。可能是 Babel transform fail 但沒拋 error。檢查 Babel CDN 是否載到，或代碼有不被 Babel 7 支援的語法。');
+  }
+}, 2000);
+</script>
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useMemo } = React;
+
+// ============================================================
+// 麵包板規格
+// ============================================================
+const BB_ROWS = 30;
+const BB_ROW_H = 20;
+const BB_COL_W = 18;
+const BB_OFFSET = { x: 380, y: 50 };
+const BB_INNER = { x: 60, y: 20 };  // 主孔區相對麵包板原點的位移
+
+// 主孔區起點（絕對座標）
+const HOLE_LEFT_X  = BB_OFFSET.x + BB_INNER.x;                          // a 列
+const HOLE_RIGHT_X = BB_OFFSET.x + BB_INNER.x + 5*BB_COL_W + 40;        // f 列
+const HOLE_TOP_Y   = BB_OFFSET.y + BB_INNER.y;
+
+const colCenterX = (side, colIdx) =>
+  (side==='left' ? HOLE_LEFT_X : HOLE_RIGHT_X) + colIdx*BB_COL_W + BB_COL_W/2;
+const rowCenterY = (row) => HOLE_TOP_Y + (row-1)*BB_ROW_H + BB_ROW_H/2;
+
+// Nano 在麵包板上的位置（D13 起在排 4，連續 15 排到排 18）
+// 左側 pin 插在 c 列（colIdx=2）；右側 pin 插在 h 列（colIdx=2 of right half）
+const NANO_FIRST_ROW = 4;
+const NANO_LEFT_LABELS  = ['D13','3V3','AREF','A0','A1','A2','A3','A4','A5','A6','A7','5V','RST','GND','VIN'];
+const NANO_RIGHT_LABELS = ['D12','D11','D10','D9','D8','D7','D6','D5','D4','D3','D2','GND','RST','D1','D0'];
+
+// 從 row 對應 Nano pin
+const rowToNanoPin = (row, side) => {
+  const idx = row - NANO_FIRST_ROW;
+  if (idx < 0 || idx >= 15) return null;
+  return side==='left' ? NANO_LEFT_LABELS[idx] : NANO_RIGHT_LABELS[idx];
+};
+const nanoPinToRow = (label) => {
+  const li = NANO_LEFT_LABELS.indexOf(label);
+  if (li >= 0) return { row: NANO_FIRST_ROW+li, side: 'left' };
+  const ri = NANO_RIGHT_LABELS.indexOf(label);
+  if (ri >= 0) return { row: NANO_FIRST_ROW+ri, side: 'right' };
+  return null;
+};
+
+// ============================================================
+// L293D 模組 pin（同 PhaseB）
+// ============================================================
+const L293D_OFFSET = { x: 950, y: 130 };
+const L293D_PINS = {
+  'A+':   { x:35, y:70,  side:'L', color:'#fbbf24', label:'A+',  desc:'Motor 2 輸出 +' },
+  'A-':   { x:35, y:95,  side:'L', color:'#fbbf24', label:'A−',  desc:'Motor 2 輸出 −' },
+  'B-':   { x:35, y:145, side:'L', color:'#fbbf24', label:'B−',  desc:'Motor 1 輸出 −' },
+  'B+':   { x:35, y:170, side:'L', color:'#fbbf24', label:'B+',  desc:'Motor 1 輸出 +' },
+  'VIN':  { x:35, y:230, side:'L', color:'#ef4444', label:'VIN', desc:'主電源 9~24V' },
+  'GND-P':{ x:35, y:255, side:'L', color:'#3b82f6', label:'GND', desc:'電源接地' },
+  'VCC':  { x:325, y:80,  side:'R', color:'#ef4444', label:'VCC', desc:'邏輯 5V（接 Nano 5V）' },
+  'GND-L':{ x:325, y:105, side:'R', color:'#3b82f6', label:'GND', desc:'邏輯接地（接 Nano GND）' },
+  'IN1':  { x:325, y:130, side:'R', color:'#22c55e', label:'IN1', desc:'A 路控制 1（接 Nano D2）' },
+  'IN2':  { x:325, y:155, side:'R', color:'#22c55e', label:'IN2', desc:'A 路控制 2（接 Nano D3）' },
+  'IN3':  { x:325, y:180, side:'R', color:'#22c55e', label:'IN3', desc:'B 路控制 1（接 Nano D4）' },
+  'IN4':  { x:325, y:205, side:'R', color:'#22c55e', label:'IN4', desc:'B 路控制 2（接 Nano D5）' },
+  'EN1':  { x:325, y:230, side:'R', color:'#a855f7', label:'EN1', desc:'A 路啟用（接 5V 拉 HIGH）' },
+  'EN2':  { x:325, y:255, side:'R', color:'#a855f7', label:'EN2', desc:'B 路啟用（接 5V 拉 HIGH）' },
+};
+
+// ============================================================
+// 連線正解（L293D pin → Nano pin label）
+// ============================================================
+const CORRECT_WIRES = {
+  'VCC': '5V',
+  'GND-L': 'GND',     // 接任一 GND 都對（左/右）
+  'IN1': 'D2',
+  'IN2': 'D3',
+  'IN3': 'D4',
+  'IN4': 'D5',
+  'EN1': '5V',
+  'EN2': '5V',
+};
+
+// ============================================================
+// L293D Module 元件
+// ============================================================
+const L293DModule = ({ hoveredPin, onPinEnter, onPinLeave, onPinDown, onPinUp, connectedPins }) => (
+  <g transform={`translate(${L293D_OFFSET.x}, ${L293D_OFFSET.y})`}>
+    <rect x="0" y="0" width="360" height="320" rx="8" fill="#1e40af" stroke="#1e3a8a" strokeWidth="2"/>
+    {[[20,20],[340,20],[20,300],[340,300]].map(([cx,cy],i)=>(
+      <g key={i}><circle cx={cx} cy={cy} r="9" fill="#94a3b8"/><circle cx={cx} cy={cy} r="5" fill="#0f172a"/></g>
+    ))}
+    {/* L293D IC */}
+    <g transform="translate(180, 160)">
+      <rect x="-55" y="-70" width="110" height="140" fill="#0f172a"/>
+      {[0,1,2,3,4,5,6,7].map(i=>{const py=-60+i*17;return(
+        <g key={i}><rect x="-62" y={py-2} width="8" height="4" fill="#cbd5e1"/><rect x="54" y={py-2} width="8" height="4" fill="#cbd5e1"/></g>
+      )})}
+      <text y="-8" textAnchor="middle" fill="#e2e8f0" fontSize="14" fontWeight="bold">L293D</text>
+      <text y="6" textAnchor="middle" fill="#94a3b8" fontSize="6">PHILIPPINES</text>
+    </g>
+    {/* 內部金屬走線 */}
+    {hoveredPin && L293D_PINS[hoveredPin] && (
+      <line x1={L293D_PINS[hoveredPin].x} y1={L293D_PINS[hoveredPin].y} x2="180" y2="160"
+        stroke="#fbbf24" strokeWidth="3" opacity="0.7" strokeDasharray="6 4">
+        <animate attributeName="opacity" values="0.4;1;0.4" dur="1s" repeatCount="indefinite"/>
+      </line>
+    )}
+    {/* 螺絲端子 */}
+    <g transform="translate(20, 50)"><rect width="40" height="65" fill="#16a34a" rx="2"/><text x="50" y="15" fill="#e2e8f0" fontSize="11" fontWeight="bold">A</text></g>
+    <g transform="translate(20, 125)"><rect width="40" height="65" fill="#16a34a" rx="2"/><text x="50" y="15" fill="#e2e8f0" fontSize="11" fontWeight="bold">B</text></g>
+    <g transform="translate(20, 210)"><rect width="40" height="65" fill="#16a34a" rx="2"/><text x="50" y="55" fill="#fbbf24" fontSize="9" fontWeight="bold">DC 9~24V</text></g>
+    <g transform="translate(240, 280)"><circle r="6" fill="#dc2626"/><text y="20" textAnchor="middle" fill="#94a3b8" fontSize="7">PWR</text></g>
+    {/* Pin */}
+    {Object.entries(L293D_PINS).map(([id,p])=>{
+      const isHovered = hoveredPin===id;
+      const isConn = connectedPins[id];
+      return(<g key={id}
+        onMouseEnter={()=>onPinEnter(id)} onMouseLeave={onPinLeave}
+        onMouseDown={(e)=>onPinDown(id,e)} onMouseUp={(e)=>onPinUp(id,e)}
+        style={{cursor:'grab'}}>
+        {(isHovered||isConn) && <circle cx={p.x} cy={p.y} r="10" fill={p.color} opacity="0.5">
+          <animate attributeName="r" values="10;24;10" dur="1.2s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0.6;0;0.6" dur="1.2s" repeatCount="indefinite"/>
+        </circle>}
+        {p.side==='R' && <rect x={p.x-5} y={p.y-3} width="10" height="6" fill="#0f172a"/>}
+        <circle cx={p.x} cy={p.y} r="6" fill="#0f172a"/>
+        <circle cx={p.x} cy={p.y} r="5" fill={isConn?'#22c55e':p.color} stroke={isHovered?'white':'#1e293b'} strokeWidth={isHovered?2:1}/>
+        <text x={p.side==='L'?p.x+14:p.x-14} y={p.y+3} textAnchor={p.side==='L'?'start':'end'}
+          fill={isHovered?'#fbbf24':'#e2e8f0'} fontSize="11" fontWeight="bold" style={{pointerEvents:'none'}}>{p.label}</text>
+      </g>);
+    })}
+  </g>
+);
+
+// ============================================================
+// Breadboard 元件
+// ============================================================
+const Breadboard = ({ hoveredRow, onRowEnter, onRowLeave, onRowUp }) => (
+  <g transform={`translate(${BB_OFFSET.x}, ${BB_OFFSET.y})`}>
+    {/* 麵包板主體（米白）— 寬度加大到 350 容納兩側電源軌 */}
+    <rect x="0" y="0" width="350" height="660" rx="6" fill="#f8fafc" stroke="#cbd5e1" strokeWidth="2"/>
+    <rect x="0" y="0" width="350" height="660" rx="6" fill="rgba(0,0,0,0.04)" transform="translate(3,3)"/>
+
+    {/* 左電源軌道（+ −） */}
+    <line x1="15" y1="20" x2="15" y2="640" stroke="#ef4444" strokeWidth="2"/>
+    <line x1="35" y1="20" x2="35" y2="640" stroke="#3b82f6" strokeWidth="2"/>
+    <text x="15" y="15" textAnchor="middle" fill="#ef4444" fontSize="11" fontWeight="bold">+</text>
+    <text x="35" y="15" textAnchor="middle" fill="#3b82f6" fontSize="14" fontWeight="bold">−</text>
+    {Array.from({length:25}).map((_,i)=>(<g key={`L${i}`}>
+      <rect x="11" y={25+i*BB_ROW_H} width="6" height="6" fill="#1e293b" rx="1"/>
+      <rect x="31" y={25+i*BB_ROW_H} width="6" height="6" fill="#1e293b" rx="1"/>
+    </g>))}
+
+    {/* 右電源軌道（+ −）— 真實麵包板兩側都有 */}
+    <line x1="315" y1="20" x2="315" y2="640" stroke="#ef4444" strokeWidth="2"/>
+    <line x1="335" y1="20" x2="335" y2="640" stroke="#3b82f6" strokeWidth="2"/>
+    <text x="315" y="15" textAnchor="middle" fill="#ef4444" fontSize="11" fontWeight="bold">+</text>
+    <text x="335" y="15" textAnchor="middle" fill="#3b82f6" fontSize="14" fontWeight="bold">−</text>
+    {Array.from({length:25}).map((_,i)=>(<g key={`R${i}`}>
+      <rect x="311" y={25+i*BB_ROW_H} width="6" height="6" fill="#1e293b" rx="1"/>
+      <rect x="331" y={25+i*BB_ROW_H} width="6" height="6" fill="#1e293b" rx="1"/>
+    </g>))}
+
+    {/* 列標籤（頂部 + 底部） */}
+    <text x="80" y="14" fill="#64748b" fontSize="9" letterSpacing="3">a b c d e</text>
+    <text x="195" y="14" fill="#64748b" fontSize="9" letterSpacing="3">f g h i j</text>
+    <text x="80" y="655" fill="#64748b" fontSize="9" letterSpacing="3">a b c d e</text>
+    <text x="195" y="655" fill="#64748b" fontSize="9" letterSpacing="3">f g h i j</text>
+
+    {/* 排號（左右兩側都有） */}
+    {Array.from({length:BB_ROWS}).map((_,i)=>(<g key={`num${i}`}>
+      <text x="55" y={20+(i+0.5)*BB_ROW_H+4} fill="#94a3b8" fontSize="8" textAnchor="end">{i+1}</text>
+      <text x="300" y={20+(i+0.5)*BB_ROW_H+4} fill="#94a3b8" fontSize="8" textAnchor="end">{i+1}</text>
+    </g>))}
+
+    {/* 排 hit zone + 孔 */}
+    {Array.from({length:BB_ROWS}).map((_,i)=>{
+      const row = i+1;
+      const y = BB_INNER.y + i*BB_ROW_H;
+      const isHovered = hoveredRow && (hoveredRow.row===row);
+      return (
+        <g key={row}>
+          {/* 左半 a-e */}
+          <rect x={BB_INNER.x} y={y} width={5*BB_COL_W} height={BB_ROW_H}
+            fill={isHovered && hoveredRow.side==='left' ? '#fef08a' : 'transparent'} opacity="0.6"
+            onMouseEnter={()=>onRowEnter({row,side:'left'})}
+            onMouseLeave={onRowLeave}
+            onMouseUp={(e)=>onRowUp({row,side:'left'},e)}
+            style={{cursor:'pointer'}}
+          />
+          {/* 孔（左半） */}
+          {[0,1,2,3,4].map(c=>(
+            <rect key={c} x={BB_INNER.x + c*BB_COL_W + 6} y={y+7} width="6" height="6" fill="#1e293b" rx="1"/>
+          ))}
+          {/* 右半 f-j */}
+          <rect x={BB_INNER.x + 5*BB_COL_W + 40} y={y} width={5*BB_COL_W} height={BB_ROW_H}
+            fill={isHovered && hoveredRow.side==='right' ? '#fef08a' : 'transparent'} opacity="0.6"
+            onMouseEnter={()=>onRowEnter({row,side:'right'})}
+            onMouseLeave={onRowLeave}
+            onMouseUp={(e)=>onRowUp({row,side:'right'},e)}
+            style={{cursor:'pointer'}}
+          />
+          {[0,1,2,3,4].map(c=>(
+            <rect key={c} x={BB_INNER.x + 5*BB_COL_W + 40 + c*BB_COL_W + 6} y={y+7} width="6" height="6" fill="#1e293b" rx="1"/>
+          ))}
+        </g>
+      );
+    })}
+
+    {/* 中央分隔 */}
+    <rect x={BB_INNER.x + 5*BB_COL_W} y="15" width="40" height={BB_ROWS*BB_ROW_H+10} fill="#e2e8f0"/>
+
+    {/* 排號右側 */}
+    {Array.from({length:BB_ROWS}).map((_,i)=>(
+      <text key={i} x="165" y={20+(i+0.5)*BB_ROW_H+4} fill="#94a3b8" fontSize="8">{i+1}</text>
+    ))}
+
+    {/* === Nano 插在第 4~18 排 === */}
+    <NanoOnBreadboard hoveredRow={hoveredRow}/>
+  </g>
+);
+
+// ============================================================
+// Nano 元件（畫在麵包板上面，c 列+h 列）
+// ============================================================
+const NanoOnBreadboard = ({ hoveredRow }) => {
+  const nanoLeft  = BB_INNER.x + 2*BB_COL_W - 6;        // 涵蓋 b-c 列
+  const nanoRight = BB_INNER.x + 5*BB_COL_W + 40 + 3*BB_COL_W + 6;  // 到 h 列
+  const nanoWidth = nanoRight - nanoLeft;
+  const nanoTop = BB_INNER.y + (NANO_FIRST_ROW-1)*BB_ROW_H - 18;
+  const nanoBot = BB_INNER.y + (NANO_FIRST_ROW+14)*BB_ROW_H + 18;
+  return (
+    <g>
+      {/* 板子主體 */}
+      <rect x={nanoLeft-3} y={nanoTop-3} width={nanoWidth+6} height={nanoBot-nanoTop+6} rx="3" fill="#0f172a" opacity="0.2"/>
+      <rect x={nanoLeft} y={nanoTop} width={nanoWidth} height={nanoBot-nanoTop} rx="3" fill="#1e40af" stroke="#1e3a8a" strokeWidth="1.5"/>
+      {/* Mini USB 朝上 */}
+      <rect x={(nanoLeft+nanoRight)/2-18} y={nanoTop-12} width="36" height="14" fill="#94a3b8" stroke="#475569" rx="1"/>
+      <rect x={(nanoLeft+nanoRight)/2-14} y={nanoTop-9} width="28" height="8" fill="#475569"/>
+      {/* CH340 SMD */}
+      <rect x={(nanoLeft+nanoRight)/2-12} y={nanoTop+12} width="24" height="16" fill="#1e293b"/>
+      <text x={(nanoLeft+nanoRight)/2} y={nanoTop+23} textAnchor="middle" fill="#94a3b8" fontSize="6">CH340</text>
+      {/* ATmega328P */}
+      <g transform={`translate(${(nanoLeft+nanoRight)/2}, ${(nanoTop+nanoBot)/2})`}>
+        <rect x="-26" y="-26" width="52" height="52" fill="#1e293b" stroke="#0f172a"/>
+        {[0,1,2,3,4,5,6,7].map(i=>(<g key={i}>
+          <rect x={-25+i*6.5+2} y="-30" width="3" height="4" fill="#cbd5e1"/>
+          <rect x={-25+i*6.5+2} y="26" width="3" height="4" fill="#cbd5e1"/>
+          <rect x="-30" y={-25+i*6.5+2} width="4" height="3" fill="#cbd5e1"/>
+          <rect x="26" y={-25+i*6.5+2} width="4" height="3" fill="#cbd5e1"/>
+        </g>))}
+        <text y="-2" textAnchor="middle" fill="#e2e8f0" fontSize="6" fontWeight="bold">ATMEGA</text>
+        <text y="7" textAnchor="middle" fill="#e2e8f0" fontSize="6" fontWeight="bold">328P</text>
+      </g>
+      {/* NANO 標誌 */}
+      <text x={(nanoLeft+nanoRight)/2} y={nanoBot-25} textAnchor="middle" fill="#e2e8f0" fontSize="9" fontWeight="bold">NANO</text>
+      {/* Reset 按鈕 */}
+      <rect x={(nanoLeft+nanoRight)/2-10} y={nanoBot-18} width="20" height="12" fill="#1e293b" rx="1"/>
+      <circle cx={(nanoLeft+nanoRight)/2} cy={nanoBot-12} r="4" fill="#475569"/>
+
+      {/* 左 pin labels（c 列） */}
+      {NANO_LEFT_LABELS.map((label, i) => {
+        const y = BB_INNER.y + (NANO_FIRST_ROW-1+i)*BB_ROW_H + BB_ROW_H/2;
+        const isMatch = hoveredRow && hoveredRow.row===NANO_FIRST_ROW+i && hoveredRow.side==='left';
+        return (
+          <g key={`L-${label}`}>
+            {/* pin 銅腳 */}
+            <rect x={nanoLeft-3} y={y-2} width="6" height="4" fill="#cbd5e1"/>
+            <text x={nanoLeft+8} y={y+3} fill={isMatch?'#fbbf24':'#fef3c7'} fontSize="8" fontWeight="bold" style={{pointerEvents:'none'}}>{label}</text>
+          </g>
+        );
+      })}
+      {/* 右 pin labels（h 列） */}
+      {NANO_RIGHT_LABELS.map((label, i) => {
+        const y = BB_INNER.y + (NANO_FIRST_ROW-1+i)*BB_ROW_H + BB_ROW_H/2;
+        const isMatch = hoveredRow && hoveredRow.row===NANO_FIRST_ROW+i && hoveredRow.side==='right';
+        return (
+          <g key={`R-${label}`}>
+            <rect x={nanoRight-3} y={y-2} width="6" height="4" fill="#cbd5e1"/>
+            <text x={nanoRight-8} y={y+3} textAnchor="end" fill={isMatch?'#fbbf24':'#fef3c7'} fontSize="8" fontWeight="bold" style={{pointerEvents:'none'}}>{label}</text>
+          </g>
+        );
+      })}
+    </g>
+  );
+};
+
+// ============================================================
+// 主 App
+// ============================================================
+function App() {
+  const [hoveredPin, setHoveredPin] = useState(null);
+  const [hoveredRow, setHoveredRow] = useState(null);
+  const [activeWire, setActiveWire] = useState(null);
+  const [wires, setWires] = useState([]);
+  const [feedback, setFeedback] = useState(null);
+  const svgRef = useRef(null);
+
+  const getSvgCoords = (e) => {
+    const rect = svgRef.current.getBoundingClientRect();
+    return { x:(e.clientX-rect.left)*(1400/rect.width), y:(e.clientY-rect.top)*(700/rect.height) };
+  };
+
+  const handlePinDown = (id, e) => {
+    e.stopPropagation();
+    const c = getSvgCoords(e);
+    setActiveWire({ from: id, x: c.x, y: c.y });
+  };
+  const handlePinUp = (id, e) => { e.stopPropagation(); setActiveWire(null); };
+  const handleSvgMove = (e) => {
+    if (!activeWire) return;
+    const c = getSvgCoords(e);
+    setActiveWire({ from: activeWire.from, x: c.x, y: c.y });
+  };
+  const handleSvgUp = () => setActiveWire(null);
+
+  const handleRowUp = (rowInfo, e) => {
+    if (!activeWire) return;
+    const nanoPin = rowToNanoPin(rowInfo.row, rowInfo.side);
+    const correct = CORRECT_WIRES[activeWire.from];
+    const isCorrect = nanoPin && (
+      correct === nanoPin ||
+      (correct === 'GND' && (nanoPin === 'GND')) ||
+      (correct === '5V' && nanoPin === '5V')
+    );
+    if (isCorrect) {
+      // 過關
+      setWires([...wires, {
+        from: activeWire.from,
+        toRow: rowInfo.row, toSide: rowInfo.side,
+        nanoPin
+      }]);
+      setFeedback({ type:'win', msg:`⚡ 正確！${activeWire.from} 接到了 Nano ${nanoPin}（排 ${rowInfo.row} ${rowInfo.side==='left'?'a-e':'f-j'}）`, ts:Date.now() });
+    } else if (nanoPin) {
+      setFeedback({ type:'wrong', msg:`✗ 這列接的是 ${nanoPin}，不是 ${correct}！${activeWire.from} 該接的是 Nano ${correct}`, ts:Date.now() });
+    } else {
+      setFeedback({ type:'wrong', msg:`✗ 排 ${rowInfo.row} 不是 Nano 的腳位（Nano 插在排 4~18）`, ts:Date.now() });
+    }
+    setActiveWire(null);
+  };
+
+  // 提示自動消失
+  React.useEffect(() => {
+    if (!feedback) return;
+    const t = setTimeout(() => setFeedback(null), 3500);
+    return () => clearTimeout(t);
+  }, [feedback]);
+
+  const connectedPins = useMemo(() => {
+    const m = {};
+    wires.forEach(w => m[w.from] = true);
+    return m;
+  }, [wires]);
+
+  const targetRow = activeWire ? nanoPinToRow(CORRECT_WIRES[activeWire.from]) : null;
+
+  // 統計進度
+  const totalNeeded = Object.keys(CORRECT_WIRES).length;
+  const completed = wires.length;
+
+  return (
+    <div className="min-h-screen p-3 text-slate-200 font-sans">
+      <div className="max-w-7xl mx-auto">
+        <div className="bg-slate-800 p-3 rounded-lg border border-slate-700 mb-2 flex justify-between items-center flex-wrap gap-2">
+          <div>
+            <div className="text-xs text-cyan-400 font-bold tracking-wider">L3 PHASE C — 完整連連看（Nano 插麵包板）</div>
+            <div className="text-lg font-bold">🔌 用杜邦線把 L293D 接到 Arduino Nano</div>
+            <div className="text-xs text-slate-400">點 L293D 任一排針 → 拖到麵包板上 Nano 對應的那一排</div>
+          </div>
+          <div className="flex gap-3 items-center">
+            <div className="text-sm bg-slate-900 px-3 py-1 rounded border border-slate-700">進度 <span className="font-bold text-cyan-400">{completed}/{totalNeeded}</span></div>
+            <button onClick={()=>{setWires([]);setFeedback(null);}} className="px-3 py-1 text-xs font-bold bg-orange-900/50 border border-orange-500 rounded text-orange-200">🔄 清線</button>
+          </div>
+        </div>
+
+        <div className="bg-[#0b1221] rounded-xl shadow-2xl border border-slate-700 overflow-hidden">
+          <svg ref={svgRef} viewBox="0 0 1400 750" className="w-full h-auto"
+            onMouseMove={handleSvgMove} onMouseUp={handleSvgUp} style={{userSelect:'none'}}>
+            <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" strokeWidth="1"/>
+            </pattern>
+            <rect width="1400" height="750" fill="url(#grid)"/>
+
+            <text x="490" y="40" textAnchor="middle" fill="#fbbf24" fontSize="14" fontWeight="bold">400 孔麵包板（Arduino Nano 插在排 4~18）</text>
+            <text x="1130" y="115" textAnchor="middle" fill="#fbbf24" fontSize="14" fontWeight="bold">L293D 雙路電機驅動模組</text>
+
+            {/* 提示活躍目標 row（拖曳中時，正解 row 微閃） */}
+            {targetRow && (
+              <rect
+                x={targetRow.side==='left'?HOLE_LEFT_X:HOLE_RIGHT_X}
+                y={rowCenterY(targetRow.row)-BB_ROW_H/2}
+                width={5*BB_COL_W} height={BB_ROW_H}
+                fill="#22c55e" opacity="0.3"
+              >
+                <animate attributeName="opacity" values="0.15;0.4;0.15" dur="1s" repeatCount="indefinite"/>
+              </rect>
+            )}
+
+            <Breadboard
+              hoveredRow={hoveredRow}
+              onRowEnter={setHoveredRow}
+              onRowLeave={()=>setHoveredRow(null)}
+              onRowUp={handleRowUp}
+            />
+
+            <L293DModule
+              hoveredPin={hoveredPin}
+              onPinEnter={setHoveredPin}
+              onPinLeave={()=>setHoveredPin(null)}
+              onPinDown={handlePinDown}
+              onPinUp={handlePinUp}
+              connectedPins={connectedPins}
+            />
+
+            {/* 已連線 */}
+            {wires.map((w,i)=>{
+              const p = L293D_PINS[w.from];
+              const fx = L293D_OFFSET.x + p.x;
+              const fy = L293D_OFFSET.y + p.y;
+              const tx = colCenterX(w.toSide, 2);
+              const ty = rowCenterY(w.toRow);
+              return (<g key={i}>
+                <line x1={fx} y1={fy} x2={tx} y2={ty} stroke="#fbbf24" strokeWidth="4" strokeLinecap="round"/>
+                <line x1={fx} y1={fy} x2={tx} y2={ty} stroke="white" strokeWidth="2" strokeDasharray="6 8" className="current-flow"/>
+              </g>);
+            })}
+
+            {/* 拖曳虛線 */}
+            {activeWire && (() => {
+              const p = L293D_PINS[activeWire.from];
+              return <line x1={L293D_OFFSET.x+p.x} y1={L293D_OFFSET.y+p.y}
+                x2={activeWire.x} y2={activeWire.y}
+                stroke="#fbbf24" strokeWidth="3" strokeDasharray="8 4" opacity="0.8"/>;
+            })()}
+
+            {/* hover pin 提示 */}
+            {hoveredPin && L293D_PINS[hoveredPin] && (
+              <g transform="translate(700, 720)">
+                <rect x="-260" y="-20" width="520" height="32" rx="6" fill="#0f172a" stroke="#fbbf24"/>
+                <text textAnchor="middle" y="-2" fill="#fbbf24" fontSize="11" fontWeight="bold">[L293D] {L293D_PINS[hoveredPin].label}</text>
+                <text textAnchor="middle" y="10" fill="white" fontSize="10">{L293D_PINS[hoveredPin].desc}</text>
+              </g>
+            )}
+
+            {/* hover row 提示 */}
+            {hoveredRow && (
+              <g transform="translate(700, 720)">
+                <rect x="-260" y="-20" width="520" height="32" rx="6" fill="#0f172a" stroke="#22c55e"/>
+                <text textAnchor="middle" y="-2" fill="#22c55e" fontSize="11" fontWeight="bold">
+                  排 {hoveredRow.row} {hoveredRow.side==='left'?'a-e':'f-j'}
+                  {rowToNanoPin(hoveredRow.row, hoveredRow.side) ? ` → 對應 Nano ${rowToNanoPin(hoveredRow.row, hoveredRow.side)}` : '（這排沒有 Nano）'}
+                </text>
+                <text textAnchor="middle" y="10" fill="white" fontSize="10">同一排 5 孔內部相通，插到任一孔效果相同</text>
+              </g>
+            )}
+
+            {/* feedback */}
+            {feedback && (
+              <g>
+                <rect x="350" y="65" width="700" height="40" rx="8"
+                  fill={feedback.type==='win'?'#22c55e':'#dc2626'} stroke="white"/>
+                <text x="700" y="91" textAnchor="middle" fill="white" fontSize="14" fontWeight="bold">{feedback.msg}</text>
+              </g>
+            )}
+
+            {/* 過關 */}
+            {completed === totalNeeded && (
+              <g transform="translate(700, 360)">
+                <rect x="-200" y="-50" width="400" height="100" rx="12" fill="#0f172a" stroke="#fbbf24" strokeWidth="3"/>
+                <text textAnchor="middle" y="-5" fill="#fbbf24" fontSize="28" fontWeight="bold">🎉 L3 過關！</text>
+                <text textAnchor="middle" y="25" fill="white" fontSize="12">Nano + L293D 接線全對！</text>
+              </g>
+            )}
+          </svg>
+        </div>
+
+        <div className="mt-3 grid grid-cols-3 gap-3">
+          <div className="bg-slate-800 p-3 rounded-lg border border-slate-700">
+            <div className="font-bold text-cyan-400 mb-2 text-xs">📋 任務清單（{completed}/{totalNeeded}）</div>
+            <ul className="text-[11px] text-slate-300 space-y-1">
+              {Object.entries(CORRECT_WIRES).map(([from, to]) => (
+                <li key={from} className={connectedPins[from]?'text-green-400 line-through':''}>
+                  {connectedPins[from]?'✅':'⬜'} L293D <span className="font-bold">{from}</span> → Nano <span className="font-bold">{to}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="bg-slate-800 p-3 rounded-lg border border-slate-700">
+            <div className="font-bold text-yellow-400 mb-2 text-xs">⚡ 怎麼玩</div>
+            <ul className="text-[11px] text-slate-300 space-y-1 ml-3 list-disc">
+              <li>點 L293D 任一排針 + 按住</li>
+              <li>拖到麵包板上 Nano 對應 pin 的那一排</li>
+              <li>正確 → 線變金色 + 電流粒子</li>
+              <li>錯誤 → 紅色提示告訴你那排是接到誰</li>
+              <li>拖曳中：正解排會綠色微閃提示</li>
+            </ul>
+          </div>
+          <div className="bg-slate-800 p-3 rounded-lg border border-slate-700">
+            <div className="font-bold text-pink-400 mb-2 text-xs">🎓 學到</div>
+            <ul className="text-[11px] text-slate-300 space-y-1 ml-3 list-disc">
+              <li>麵包板同一排內 5 孔相通</li>
+              <li>Nano 插麵包板後，每排對應 1 個 pin</li>
+              <li>杜邦線 = 把訊號從 A 帶到 B</li>
+              <li>EN1/EN2 接 5V = 「永遠啟用」</li>
+              <li>下一步 L4：加電池 + 馬達 + IR</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
